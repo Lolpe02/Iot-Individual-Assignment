@@ -9,7 +9,9 @@
 
 #define SAMPLES 1024
 #define FILTER true
-#define FILTERWINDOWSIZE 5
+#define FILTER_ZSCORE_OR_HAMPEL false
+#define FILTER_WINDOW_SIZE 15
+#define SELF_OPTIMIZING false
 volatile uint32_t samplingFreq = 20000;
 volatile uint16_t optimizedFreq = 0;
 
@@ -20,6 +22,9 @@ void TaskFFT(void *pvParameters);
 TaskHandle_t readADCTaskHandle;
 void TaskFilter(void *pvParameters);
 TaskHandle_t filterTaskHandle;
+void TaskCommunication(void *pvParameters);
+TaskHandle_t communicationTaskHandle;
+
 // Handle for our Queue
 QueueHandle_t maxFFTQueue;
 
@@ -27,6 +32,7 @@ SemaphoreHandle_t xSamplingReady;
 SemaphoreHandle_t xFilterReady;
 SemaphoreHandle_t xFilterFinished;
 SemaphoreHandle_t xFFTFinished;
+SemaphoreHandle_t xCommReady;
 
 // Double buffers for raw ADC data for filtering
 float vRaw0[SAMPLES];
@@ -77,6 +83,7 @@ void setup() {
   xFilterReady = xSemaphoreCreateBinary();
   xFilterFinished = xSemaphoreCreateBinary();
   xFFTFinished = xSemaphoreCreateBinary();
+  xCommReady = xSemaphoreCreateBinary();
 
   xSemaphoreGive(xFFTFinished);  // Give the FFT semaphore initially so the Sampler can do the first swap without waiting
   xSemaphoreGive(xFilterFinished); // Give the Filter semaphore initially so the Sampler can do the first swap without waiting
@@ -89,7 +96,7 @@ void setup() {
   xTaskCreatePinnedToCore(TaskReadADC, "ReadADC", 2048, NULL, 1, &readADCTaskHandle, 1);
   xTaskCreatePinnedToCore(TaskFFT, "FFT_Task", 10*1024, NULL, 1, &fftTaskHandle, 0);
   xTaskCreate(TaskFilter, "Filter_Task", 2048, NULL, 1, &filterTaskHandle);
-
+  xTaskCreate(TaskCommunication, "Communication_Task", 1024, NULL, 1, &communicationTaskHandle);
 }
 
 void loop() {
@@ -99,31 +106,30 @@ void TaskReadADC(void *pvParameters) {
   uint16_t i2s_raw_buffer[SAMPLES]; // we'll try 2048 later
   size_t bytes_read = 0;
   uint8_t filledBufferCounter = 0;
-  
   while (1) {
+    auto timerstart = micros();
+
     // read all 1024 samples from I2S
     i2s_read(I2S_NUM_0, 
                  &i2s_raw_buffer, 
                  sizeof(i2s_raw_buffer), 
                  &bytes_read, 
                  portMAX_DELAY);
+
     // cast typeless buffer to float (16-bits) inside procReal
     for (int i = 0; i < SAMPLES; i++) {
       i2s_raw_buffer[i] &= 0x0FFF; // Mask per 12-bit ADC or (i2s_raw_buffer[i] >> 4) & 0x0FFF;
       fillRaw[i] = (float)i2s_raw_buffer[i];
     }
     if (bytes_read >= SAMPLES*sizeof(uint16_t)) {
-      // --- THE HANDSHAKE ---
-      // Wait for FFT task to confirm it is finished with procReal/procImag
-      // If the FFT is slow, the Sampler will pause here briefly
+      
       xSemaphoreTake(xFilterFinished, portMAX_DELAY);
       
-
       procRaw = fillRaw; 
       fillRaw = (fillRaw == vRaw0) ? vRaw1 : vRaw0;
       
       // change haardware sampling frequency if optimizedFreq is set by FFT
-      if (optimizedFreq > 0 && optimizedFreq != samplingFreq) {
+      if (SELF_OPTIMIZING && optimizedFreq > 0 && optimizedFreq != samplingFreq) {
         uint16_t bottom_range = samplingFreq * 0.85;
         uint16_t top_range = samplingFreq * 1.15;
         // if it's too similar ignore it, if it's too different cap it to avoid crazy values
@@ -139,12 +145,11 @@ void TaskReadADC(void *pvParameters) {
         }  
       }
 
-      xSemaphoreGive(xSamplingReady); // Tell FFT: "Data is ready"
+      xSemaphoreGive(xSamplingReady); // Tell FFT:
     
       // 3. Avvisa il Task FFT che i dati sono pronti
       filledBufferCounter++;
-      Serial.printf("ADC Buffer n %d filled, notifying FFT Task...\n", filledBufferCounter);
-      //xTaskNotifyGive(fftTaskHandle);
+      Serial.printf("ADC Buffer n %d filled in %lu microseconds, notifying FFT Task...\n", filledBufferCounter, micros() - timerstart);
     }
   }
 }
@@ -154,7 +159,7 @@ void TaskFFT(void *pvParameters) {
   uint8_t fftCounter = 0;
   while (1) {
     if (xSemaphoreTake(xFilterReady, portMAX_DELAY) == pdTRUE) {
-      unsigned long timerstart = micros();
+      auto timerstart = micros();
 
       // --- STEP 1: Remove DC Offset (Crucial to kill that 4Hz peak) ---
       float mean = 0;
@@ -190,21 +195,135 @@ void TaskFFT(void *pvParameters) {
 }
 
 void TaskFilter(void *pvParameters) {
-  static float history[FILTERWINDOWSIZE] = {0};
+  static float history[FILTER_WINDOW_SIZE-1] = {0};
   static bool initialized = false;
+  const int windowSize = (FILTER_WINDOW_SIZE < SAMPLES) ? FILTER_WINDOW_SIZE : SAMPLES;
+  uint8_t filteredBlockCounter = 0;
   while (1) {
+    auto timerstart = micros();
     bool ready1 = xSemaphoreTake(xSamplingReady, portMAX_DELAY);
     bool ready2 = xSemaphoreTake(xFFTFinished, portMAX_DELAY);
     if (ready1 == pdTRUE && ready2 == pdTRUE) {
-      // --- STEP 1: Simple Moving Average Filter ---
+      // no filter
       if (!FILTER) {
         for (int i = 0; i < SAMPLES; i++) {
           fillReal[i] = procRaw[i]; // No filter, just copy
-          fillImag[i] = 0; // Keep imaginary part zero for FFT
+          fillImag[i] = 0.0f; // Keep imaginary part zero for FFT
         }
       } else {
-        // Moving Average Filter with history across consecutive blocks
-        const int windowSize = (FILTERWINDOWSIZE < SAMPLES) ? FILTERWINDOWSIZE : SAMPLES;
+        const float zThreshold = 3.0f;
+        const float eps = 1e-6f;
+        const int historySize = windowSize - 1;
+        if (!initialized) {
+          for (int i = 0; i < historySize; i++) {
+            history[i] = procRaw[i];
+          }
+          initialized = true;
+        }
+
+        float runningSum = 0.0;
+        float runningSumSq = 0.0;
+        for (int i = 0; i < historySize; i++) {
+          float h = history[i];
+          runningSum += h;
+          runningSumSq += h * h;
+        }
+
+        for (int i = 0; i < SAMPLES; i++) {
+          float newSample = procRaw[i];
+          runningSum += newSample;
+          runningSumSq += newSample * newSample;
+
+          float oldSample;
+          if (i == 0) {
+            oldSample = 0.0f;
+          } else if (i < windowSize) {
+            oldSample = history[i - 1];
+          } else {
+            oldSample = procRaw[i - windowSize];
+          }
+
+          if (i > 0) {
+            runningSum -= oldSample;
+            runningSumSq -= oldSample * oldSample;
+          }
+
+          float mean = runningSum / (float)windowSize;
+          float ex2 = runningSumSq / (float)windowSize;
+          // var = E[(x - mean)^2] = E[x^2] - mean^2
+          // This is the expanded form of (x - b)^2 = x^2 - 2bx + b^2,
+          // averaged over the window, so we avoid a second pass over the samples.
+          float variance = ex2 - (mean * mean);
+          if (variance < 0.0f) variance = 0.0f;
+          float stdDev = sqrtf(variance + eps);
+          float z = (newSample - mean) / stdDev;
+
+          if (fabsf(z) > zThreshold) {
+            fillReal[i] = mean;
+          } else {
+            fillReal[i] = newSample;
+          }
+          fillImag[i] = 0.0f; // Keep imaginary part zero for FFT
+        }
+
+        for (int i = 0; i < historySize; i++) {
+          history[i] = procRaw[SAMPLES - historySize + i];
+        }
+      }
+
+      procReal = fillReal; procImag = fillImag;
+      fillReal = (fillReal == vReal0) ? vReal1 : vReal0;
+      fillImag = (fillImag == vImag0) ? vImag1 : vImag0;
+      xSemaphoreGive(xFilterFinished); // Tell Sampler
+      xSemaphoreGive(xFilterReady); // Tell FFT
+      xSemaphoreGive(xCommReady); // Tell Communication Task
+
+      filteredBlockCounter++;
+      Serial.printf("Filter processed buffer n%d in %lu microseconds\n", filteredBlockCounter, micros() - timerstart);
+    }
+  }
+}
+
+void TaskCommunication(void *pvParameters) {
+  uint8_t fftCounter = 0;
+  while (1) {
+    // we just read, we dont want to block the FFT task, so we check if the semaphore is available without waiting
+
+    if (xSemaphoreTake(xCommReady, portMAX_DELAY) == pdTRUE) {
+      auto timerstart = micros();
+      // copy procReal to a local buffer to avoid holding the semaphore while printing
+      float localProcReal[SAMPLES];
+      for (int i = 0; i < SAMPLES; i++) {
+        localProcReal[i] = procReal[i];
+      }
+      xSemaphoreGive(xCommReady); // release immediately after copying
+
+      // calculate random stuff from procReal to simulate some processing and have something to print 
+      float max = 0;
+      float min = 1000000;
+      float sum = 0;
+
+      for (int i = 0; i < SAMPLES; i++) {
+        sum += localProcReal[i];
+        if (localProcReal[i] > max) max = localProcReal[i];
+        if (localProcReal[i] < min) min = localProcReal[i];
+      }
+      // calculate mean & standard deviation
+      float mean = sum / (float)SAMPLES;
+      float sumSq = 0;
+      for (int i = 0; i < SAMPLES; i++) {
+        float diff = localProcReal[i] - mean;
+        sumSq += diff * diff;
+      }
+      float stdDev = sqrt(sumSq / (float)SAMPLES);
+
+      }
+  }  
+}
+
+/*
+ // Moving Average Filter with history across consecutive blocks
+        const int windowSize = (FILTER_WINDOW_SIZE < SAMPLES) ? FILTER_WINDOW_SIZE : SAMPLES;
 
         if (!initialized) {
           for (int i = 0; i < windowSize; i++) {
@@ -236,20 +355,7 @@ void TaskFilter(void *pvParameters) {
         for (int i = 0; i < windowSize; i++) {
           history[i] = procRaw[SAMPLES - windowSize + i];
         }
-      }
-
-      procReal = fillReal; procImag = fillImag;
-      fillReal = (fillReal == vReal0) ? vReal1 : vReal0;
-      fillImag = (fillImag == vImag0) ? vImag1 : vImag0;
-      xSemaphoreGive(xFilterFinished); // Tell Sampler
-      xSemaphoreGive(xFilterReady); // Tell FFT
-    }
-  }
-}
-
-
-
-
+      }*/
 
 
 
