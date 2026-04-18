@@ -5,6 +5,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
+#include "WiFi.h"
+#include "PubSubClient.h"
 
 
 #define SAMPLES 1024
@@ -12,7 +14,9 @@
 #define FILTER_ZSCORE_OR_HAMPEL false
 #define FILTER_WINDOW_SIZE 15
 #define SELF_OPTIMIZING false
-volatile uint32_t samplingFreq = 20000;
+#define WiFi_SSID "F7"
+#define WiFi_PASSWORD "TrallalleroTrallalla"
+volatile uint32_t samplingFreq = 10000;
 volatile uint16_t optimizedFreq = 0;
 
 // archetypes
@@ -24,15 +28,28 @@ void TaskFilter(void *pvParameters);
 TaskHandle_t filterTaskHandle;
 void TaskCommunication(void *pvParameters);
 TaskHandle_t communicationTaskHandle;
+void TaskTimingCsv(void *pvParameters);
+TaskHandle_t timingCsvTaskHandle;
 
-// Handle for our Queue
+// Handle for our Queues
 QueueHandle_t maxFFTQueue;
+
+QueueHandle_t communicationTimestampsQueue;
+QueueHandle_t filterTimestampsQueue;
+QueueHandle_t fftTimestampsQueue;
+QueueHandle_t samplingTimestampsQueue;
 
 SemaphoreHandle_t xSamplingReady;
 SemaphoreHandle_t xFilterReady;
 SemaphoreHandle_t xFilterFinished;
 SemaphoreHandle_t xFFTFinished;
 SemaphoreHandle_t xCommReady;
+
+struct BlockTiming {
+  uint8_t blockNumber;
+  uint32_t start_timestamp;
+  uint32_t end_timestamp;
+};
 
 // Double buffers for raw ADC data for filtering
 float vRaw0[SAMPLES];
@@ -72,12 +89,50 @@ void setup_i2s(uint32_t samplingFreq) {
   i2s_adc_enable(I2S_NUM_0);
 }
 
+void setupWiFi() {
+  WiFi.begin(WiFi_SSID, WiFi_PASSWORD);
+  Serial.print("[WiFi] Connecting to %s", WiFi_SSID);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\n[WiFi] Connected!, IP address: %s", WiFi.localIP().toString().c_str());
+}
+
+void setupMQTT() {
+  mqttClient.setServer(mqtt_server, mqtt_port);
+  reconnectMQTT();
+}
+
+void reconnectMQTT() {
+  while (!mqttClient.connected()) {
+    Serial.print("[MQTT] Attempting connection...");
+    if (mqttClient.connect("ESP32Client")) {
+      Serial.println("connected");
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(mqttClient.state());
+      delay(5000);
+    }
+  }
+}
+
+void publishMQTT(const char* topic, const char* payload) {
+  if (!mqttClient.connected()) reconnectMQTT();
+  mqttClient.loop();
+  
+  char message[256];
+  snprintf(message, sizeof(message), "%s", payload);
+  mqttClient.publish(topic, message);
+}
+
 void setup() {
   Serial.begin(115200);
   // set adc pin 32 as input
   pinMode(32, INPUT);
   // activate i2s
   setup_i2s(samplingFreq);
+
 
   xSamplingReady = xSemaphoreCreateBinary();
   xFilterReady = xSemaphoreCreateBinary();
@@ -90,6 +145,11 @@ void setup() {
 
   // Create a queue capable of containing 100 integers.
   maxFFTQueue = xQueueCreate(100, sizeof(int));
+  samplingTimestampsQueue = xQueueCreate(100, sizeof(BlockTiming));
+  filterTimestampsQueue = xQueueCreate(100, sizeof(BlockTiming));
+  fftTimestampsQueue = xQueueCreate(100, sizeof(BlockTiming));
+  communicationTimestampsQueue = xQueueCreate(100, sizeof(BlockTiming));
+
   
 
 
@@ -97,6 +157,7 @@ void setup() {
   xTaskCreatePinnedToCore(TaskFFT, "FFT_Task", 10*1024, NULL, 1, &fftTaskHandle, 0);
   xTaskCreate(TaskFilter, "Filter_Task", 2048, NULL, 1, &filterTaskHandle);
   xTaskCreate(TaskCommunication, "Communication_Task", 1024, NULL, 1, &communicationTaskHandle);
+  xTaskCreate(TaskTimingCsv, "TimingCsv_Task", 4096, NULL, 1, &timingCsvTaskHandle);
 }
 
 void loop() {
@@ -107,7 +168,7 @@ void TaskReadADC(void *pvParameters) {
   size_t bytes_read = 0;
   uint8_t filledBufferCounter = 0;
   while (1) {
-    auto timerstart = micros();
+    auto timerstart = esp_timer_get_time();
 
     // read all 1024 samples from I2S
     i2s_read(I2S_NUM_0, 
@@ -130,11 +191,11 @@ void TaskReadADC(void *pvParameters) {
       
       // change haardware sampling frequency if optimizedFreq is set by FFT
       if (SELF_OPTIMIZING && optimizedFreq > 0 && optimizedFreq != samplingFreq) {
-        uint16_t bottom_range = samplingFreq * 0.85;
-        uint16_t top_range = samplingFreq * 1.15;
+        uint16_t bottom_range = samplingFreq * 0.90;
+        uint16_t top_range = samplingFreq * 1.10;
         // if it's too similar ignore it, if it's too different cap it to avoid crazy values
         bool tooSimilar = (optimizedFreq > bottom_range) && (optimizedFreq < top_range);
-        bool inValidRange = (optimizedFreq >= 5000) && (optimizedFreq <= 50000);
+        bool inValidRange = (optimizedFreq >= 0.005) && (optimizedFreq <= 50000);
         if (inValidRange && !tooSimilar) {
           Serial.printf("Optimized frequency %.2f Hz is too close or too far from current %.2f Hz, ignoring...\n", (float)optimizedFreq, (float)samplingFreq);
           samplingFreq = optimizedFreq;
@@ -145,21 +206,24 @@ void TaskReadADC(void *pvParameters) {
         }  
       }
 
-      xSemaphoreGive(xSamplingReady); // Tell FFT:
+      xSemaphoreGive(xSamplingReady); // Tell Filter:
     
-      // 3. Avvisa il Task FFT che i dati sono pronti
-      filledBufferCounter++;
-      Serial.printf("ADC Buffer n %d filled in %lu microseconds, notifying FFT Task...\n", filledBufferCounter, micros() - timerstart);
+      BlockTiming timingInfo = {
+        .blockNumber = filledBufferCounter++,
+        .start_timestamp = timerstart,
+        .end_timestamp = esp_timer_get_time()
+      };
+      xQueueSend(samplingTimestampsQueue, &timingInfo, 10);      
     }
   }
 }
 
 
 void TaskFFT(void *pvParameters) {
-  uint8_t fftCounter = 0;
+  uint8_t filledBufferCounter = 0;
   while (1) {
     if (xSemaphoreTake(xFilterReady, portMAX_DELAY) == pdTRUE) {
-      auto timerstart = micros();
+      auto timerstart = esp_timer_get_time();
 
       // --- STEP 1: Remove DC Offset (Crucial to kill that 4Hz peak) ---
       float mean = 0;
@@ -188,19 +252,24 @@ void TaskFFT(void *pvParameters) {
       // Suggest a new sampling frequency based on the detected max frequency
       optimizedFreq = f_max * 2.6; // 2.5 is a safety margin above Nyquist
       Serial.printf("Detected Max Freq: %.2f Hz | New Suggested Fs: %.2f Hz\n", f_max, f_max * 2.5);
-      fftCounter++;
-      Serial.printf("FFT processed buffer n%d  in %lu microseconds\n", fftCounter, micros() - timerstart);
-    }
-  }  
+      BlockTiming timingInfo = {
+        .blockNumber = filledBufferCounter++,
+        .start_timestamp = timerstart,
+        .end_timestamp = esp_timer_get_time()
+      };
+      // wait just a little then drop
+      xQueueSend(fftTimestampsQueue, &timingInfo, 10);
+      }
+    }  
 }
 
 void TaskFilter(void *pvParameters) {
   static float history[FILTER_WINDOW_SIZE-1] = {0};
   static bool initialized = false;
   const int windowSize = (FILTER_WINDOW_SIZE < SAMPLES) ? FILTER_WINDOW_SIZE : SAMPLES;
-  uint8_t filteredBlockCounter = 0;
+  uint8_t filledBufferCounter = 0;
   while (1) {
-    auto timerstart = micros();
+    auto timerstart = esp_timer_get_time();
     bool ready1 = xSemaphoreTake(xSamplingReady, portMAX_DELAY);
     bool ready2 = xSemaphoreTake(xFFTFinished, portMAX_DELAY);
     if (ready1 == pdTRUE && ready2 == pdTRUE) {
@@ -278,19 +347,23 @@ void TaskFilter(void *pvParameters) {
       xSemaphoreGive(xFilterReady); // Tell FFT
       xSemaphoreGive(xCommReady); // Tell Communication Task
 
-      filteredBlockCounter++;
-      Serial.printf("Filter processed buffer n%d in %lu microseconds\n", filteredBlockCounter, micros() - timerstart);
+      BlockTiming timingInfo = {
+        .blockNumber = filledBufferCounter++,
+        .start_timestamp = timerstart,
+        .end_timestamp = esp_timer_get_time()
+      };
+      xQueueSend(filterTimestampsQueue, &timingInfo, 10);
     }
   }
 }
 
 void TaskCommunication(void *pvParameters) {
-  uint8_t fftCounter = 0;
+  uint8_t filledBufferCounter = 0;
   while (1) {
     // we just read, we dont want to block the FFT task, so we check if the semaphore is available without waiting
 
     if (xSemaphoreTake(xCommReady, portMAX_DELAY) == pdTRUE) {
-      auto timerstart = micros();
+      auto timerstart = esp_timer_get_time();
       // copy procReal to a local buffer to avoid holding the semaphore while printing
       float localProcReal[SAMPLES];
       for (int i = 0; i < SAMPLES; i++) {
@@ -316,10 +389,54 @@ void TaskCommunication(void *pvParameters) {
         sumSq += diff * diff;
       }
       float stdDev = sqrt(sumSq / (float)SAMPLES);
-
+      
+      BlockTiming timingInfo = {
+        .blockNumber = filledBufferCounter++,
+        .start_timestamp = timerstart,
+        .end_timestamp = esp_timer_get_time()
+       };
+      xQueueSend(communicationTimestampsQueue, &timingInfo, 10);
       }
   }  
 }
+
+void TaskTimingCsv(void *pvParameters) {
+  BlockTiming timingInfo;
+  Serial.println("task,block,start_us,end_us,duration_us");
+  while (1) {
+    if (xQueueReceive(samplingTimestampsQueue, &timingInfo, 0) == pdTRUE) {
+      Serial.printf("sampling,%u,%u,%u,%u\n",
+                    timingInfo.blockNumber,
+                    timingInfo.start_timestamp,
+                    timingInfo.end_timestamp,
+                    timingInfo.end_timestamp - timingInfo.start_timestamp);
+    }
+    if (xQueueReceive(filterTimestampsQueue, &timingInfo, 0) == pdTRUE) {
+      Serial.printf("filter,%u,%u,%u,%u\n",
+                    timingInfo.blockNumber,
+                    timingInfo.start_timestamp,
+                    timingInfo.end_timestamp,
+                    timingInfo.end_timestamp - timingInfo.start_timestamp);
+    }
+    if (xQueueReceive(fftTimestampsQueue, &timingInfo, 0) == pdTRUE) {
+      Serial.printf("fft,%u,%u,%u,%u\n",
+                    timingInfo.blockNumber,
+                    timingInfo.start_timestamp,
+                    timingInfo.end_timestamp,
+                    timingInfo.end_timestamp - timingInfo.start_timestamp);
+    }
+    if (xQueueReceive(communicationTimestampsQueue, &timingInfo, 0) == pdTRUE) {
+      Serial.printf("comm,%u,%u,%u,%u\n",
+                    timingInfo.blockNumber,
+                    timingInfo.start_timestamp,
+                    timingInfo.end_timestamp,
+                    timingInfo.end_timestamp - timingInfo.start_timestamp);
+    }
+    vTaskDelay(pdMS_TO_TICKS(5));
+  }
+}
+
+
 
 /*
  // Moving Average Filter with history across consecutive blocks
