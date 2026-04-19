@@ -16,15 +16,31 @@ Adafruit_INA219 ina219(INA219_ADDR);
 
 void setup() {
   Serial.begin(115200);
-  // RP2040 (Arduino-mbed): Wire.begin() has no SDA/SCL parameters.
+  const unsigned long serialWaitStart = millis();
+  while (!Serial && (millis() - serialWaitStart) < 3000) {
+    delay(10);
+  }
+  Serial.println("[BOOT] Pico started");
+
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, HIGH);
+
+  // Pico + Earle core supports explicit I2C pin assignment.
+  Wire.setSDA(PIN_SDA);
+  Wire.setSCL(PIN_SCL);
   Wire.begin();
   Wire.setClock(I2C_FREQ);
   if (!ina219.begin(&Wire)) {
-    Serial.println("Failed to find INA219 chip");
-    while (1) { delay(10); }
+    Serial.println("[ERR] Failed to find INA219 chip");
+    while (1) {
+      digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
+      Serial.println("[ERR] INA219 not detected, check wiring and address 0x40");
+      delay(1000);
+    }
   }
   // calibration for idk, pc usb power supply (5V, ~500mA max)
   ina219.setCalibration_16V_400mA();
+  Serial.println("[OK] INA219 initialized");
 }
 
 void loop() {
