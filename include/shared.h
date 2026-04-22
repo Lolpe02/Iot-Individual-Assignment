@@ -10,13 +10,20 @@
 #include "config.h"
 
 struct BlockTiming {
-  uint8_t blockNumber;
+  uint16_t blockNumber;
   int64_t start_timestamp;
   int64_t end_timestamp;
 };
 
+struct SignalStats {
+  float mean;
+  float stdDev;
+  float min;
+  float max;
+};
+
 extern volatile uint32_t samplingFreq;
-extern volatile uint16_t optimizedFreq;
+extern volatile uint32_t optimizedFreq;
 
 extern WiFiClient wifiClient;
 extern PubSubClient mqttClient;
@@ -32,6 +39,7 @@ extern QueueHandle_t communicationTimestampsQueue;
 extern QueueHandle_t filterTimestampsQueue;
 extern QueueHandle_t fftTimestampsQueue;
 extern QueueHandle_t samplingTimestampsQueue;
+extern QueueHandle_t statsQueue;
 
 extern SemaphoreHandle_t xSamplingReady;
 extern SemaphoreHandle_t xFilterReady;

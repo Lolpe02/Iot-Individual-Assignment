@@ -1,7 +1,7 @@
 #include "shared.h"
 
 volatile uint32_t samplingFreq = 44100;
-volatile uint16_t optimizedFreq = 0;
+volatile uint32_t optimizedFreq = 0;
 
 WiFiClient wifiClient;
 PubSubClient mqttClient(wifiClient);
@@ -17,6 +17,7 @@ QueueHandle_t communicationTimestampsQueue = nullptr;
 QueueHandle_t filterTimestampsQueue = nullptr;
 QueueHandle_t fftTimestampsQueue = nullptr;
 QueueHandle_t samplingTimestampsQueue = nullptr;
+QueueHandle_t statsQueue = nullptr;
 
 SemaphoreHandle_t xSamplingReady = nullptr;
 SemaphoreHandle_t xFilterReady = nullptr;
@@ -52,4 +53,5 @@ void initSystemResources() {
   filterTimestampsQueue = xQueueCreate(QUEUE_LENGTH, sizeof(BlockTiming));
   fftTimestampsQueue = xQueueCreate(QUEUE_LENGTH, sizeof(BlockTiming));
   communicationTimestampsQueue = xQueueCreate(QUEUE_LENGTH, sizeof(BlockTiming));
+  statsQueue = xQueueCreate(1, sizeof(SignalStats));
 }

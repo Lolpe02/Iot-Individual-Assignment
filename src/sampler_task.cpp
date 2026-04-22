@@ -25,9 +25,9 @@ void setupI2S(uint32_t sampleRate) {
 void TaskReadADC(void *pvParameters) {
   (void)pvParameters;
 
-  uint16_t i2s_raw_buffer[SAMPLES];
+  static uint16_t i2s_raw_buffer[SAMPLES];
   size_t bytes_read = 0;
-  uint8_t filledBufferCounter = 0;
+  uint16_t filledBufferCounter = 0;
 
   Serial.println("Starting ADC read task...");
   while (1) {
