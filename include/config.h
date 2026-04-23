@@ -2,27 +2,52 @@
 
 #include <Arduino.h>
 
+// Task IDs
+#define TASK_SAMPLER 0
+#define TASK_FILTER  1
+#define TASK_FFT     2
+#define TASK_COMM    3
+#define USE_LORA true // true = LoRa, false = MQTT
+
+// Macro unica per tutti i task
+#define PRINT_TIMING(taskId, blockNum, startUs, endUs) \
+  Serial.printf("%d,%u,%lld,%lld\n", (taskId), (uint32_t)(blockNum), (int64_t)(startUs), (int64_t)(endUs))
 constexpr int SAMPLES = 1024;
 constexpr bool FILTER_ENABLED = true;
-constexpr bool FILTER_ZSCORE_OR_HAMPEL = false;
-constexpr int FILTER_WINDOW_SIZE = 31;
-constexpr bool SELF_OPTIMIZING = false;
-constexpr int SERIAL_PLOTTER_STRIDE = 256;
+constexpr bool FILTER_ZSCORE_OR_HAMPEL = true; // true = z-score, false = Hampel
+constexpr int FILTER_WINDOW_SIZE = 25;
+constexpr bool SELF_OPTIMIZING = true;
+constexpr uint32_t SERIAL_PLOTTER_HZ = 180;
 constexpr int QUEUE_LENGTH = 100;
 
 // WiFi and MQTT configuration
 constexpr char WIFI_SSID[] = "F7";
 constexpr char WIFI_PASSWORD[] = "TrallalleroTrallalla";
 
-constexpr char MQTT_SERVER[] = "broker.hivemq.com";
+constexpr char MQTT_SERVER[] = "10.82.143.66";
 constexpr uint16_t MQTT_PORT = 1883;
+ 
+constexpr uint32_t devAddr = 0x260B770C; // Change to TTN Device Address
+constexpr uint8_t appSKey[16] = {0xAF, 0x29, 0x81, 0x36, 0x99, 0xF9, 0xED, 0xED, 0x45, 0x68, 0x35, 0x83, 0xF4, 0xCD, 0x19, 0x63}; // Change to TTN Application EUI
+constexpr uint8_t nwkSKey[16] = {0x62, 0x12, 0xD7, 0xDE, 0xB7, 0x92, 0xEA, 0xD0, 0x56, 0x11, 0xA2, 0xCA, 0x94, 0xEF, 0x02, 0x83}; // Change to TTN Application Key
 
-constexpr bool USE_LORA = false;  // Set to true to use LoRa, false for MQTT
-constexpr char devEui[] = "70B3D57ED006F936"; // Change to TTN Device EUI
-constexpr char appEui[] = "0000000000000000"; // Change to TTN Application EUI
-constexpr char appKey[] = "9F40EC52BC056E61F6BE22EB57F9EDCA"; // Change to TTN Application Key
+/* miei settings lollo
+devEui = 70B3D57ED0077179
+devAddr = 260B770C
+appSKey = AF29813699F9EDED45683583F4CD1963
+nwkSKey = 6212D7DEB792EAD05611A2CA94EF0283
+*/
+
+/* settings matteo
+uint32_t devAddr=0x260B121E;
+uint8_t appSKey[16]={0x93, 0x56, 0xFE, 0xF3, 0x5C, 0xF8, 0x5C, 0x2A, 0x35, 0x1E, 0x4F, 0x33, 0x55, 0xCF, 0xF0, 0x85};
+uint8_t nwkSKey[16]={0x3C, 0x94, 0x56, 0x68, 0x36, 0x94, 0x8E, 0xD8, 0xBA, 0x05, 0x9C, 0xCC, 0x09, 0x0E, 0xF0, 0xCF};
+*/
+
 
 /*
+
+
 const char* ca_cert= \
 "-----BEGIN CERTIFICATE-----\n" \
 "MIIEDzCCAvegAwIBAgIUfmdFnm/m/lo2q0rBd+wNbCSOgqowDQYJKoZIhvcNAQEL\n" \

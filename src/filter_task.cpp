@@ -6,8 +6,12 @@
 
 #include "shared.h"
 
+
 static void calculate_stats_and_send();
 static float median_copy(const float *arr, int size);
+static void tryPlotSample(float rawSample, float filteredSample, uint32_t samplingHz);
+
+static uint32_t plotPhaseAccumulator = 0;
 
 static float median_copy(const float *arr, int size) {
   float temp[FILTER_WINDOW_SIZE];
@@ -20,13 +24,32 @@ static float median_copy(const float *arr, int size) {
   return temp[size / 2];
 }
 
+static void tryPlotSample(float rawSample, float filteredSample, uint32_t samplingHz) {
+  if (SERIAL_PLOTTER_HZ == 0) {
+    return;
+  }
+
+  bool shouldPlot = (SERIAL_PLOTTER_HZ >= samplingHz);
+  if (!shouldPlot) {
+    plotPhaseAccumulator += SERIAL_PLOTTER_HZ;
+    if (plotPhaseAccumulator >= samplingHz) {
+      plotPhaseAccumulator -= samplingHz;
+      shouldPlot = true;
+    }
+  }
+
+  if (shouldPlot) {
+    Serial.printf(">Raw_value: %.2f, Filtered_value: %.2f\r\n", rawSample, filteredSample);
+  }
+}
+static uint16_t filledBufferCounter = 0;
+
 void TaskFilter(void *pvParameters) {
   (void)pvParameters;
 
   static float history[FILTER_WINDOW_SIZE - 1] = {0};
   static bool initialized = false;
   const int windowSize = (FILTER_WINDOW_SIZE < SAMPLES) ? FILTER_WINDOW_SIZE : SAMPLES;
-  uint16_t filledBufferCounter = 0;
   const float eps = 1e-6f;
   const int historySize = windowSize - 1;
   const float zThreshold = 2.5f;
@@ -39,6 +62,8 @@ void TaskFilter(void *pvParameters) {
     bool ready2 = xSemaphoreTake(xFFTFinished, portMAX_DELAY);
 
     if (ready1 == pdTRUE && ready2 == pdTRUE) {
+      uint32_t blockSamplingFreq = samplingFrequencyHzAssociatedWithCurrentPipelineBlock;
+
       if (!FILTER_ENABLED) {
         for (int i = 0; i < SAMPLES; i++) {
           fillReal[i] = procRaw[i];
@@ -93,13 +118,12 @@ void TaskFilter(void *pvParameters) {
             fillReal[i] = (fabsf(z) > zThreshold) ? mean : newSample;
             fillImag[i] = 0.0f;
 
-            if (i % SERIAL_PLOTTER_STRIDE == 0) {
-              Serial.printf(">Raw_value: %.2f, Filtered_value: %.2f\r\n", procRaw[i], fillReal[i]);
-            }
+            tryPlotSample(procRaw[i], fillReal[i], blockSamplingFreq);
 
             if ((i & 0x3F) == 0) {
               taskYIELD();
             }
+
           }
         } else {
           float windowValues[FILTER_WINDOW_SIZE];
@@ -125,9 +149,7 @@ void TaskFilter(void *pvParameters) {
             fillReal[i] = (deviation > threshold) ? median : procRaw[i];
             fillImag[i] = 0.0f;
 
-            if (i % SERIAL_PLOTTER_STRIDE == 0) {
-              Serial.printf(">Raw_value: %.2f, Filtered_value: %.2f\r\n", procRaw[i], fillReal[i]);
-            }
+            tryPlotSample(procRaw[i], fillReal[i], blockSamplingFreq);
 
             if ((i & 0x3F) == 0) {
               taskYIELD();
@@ -147,14 +169,13 @@ void TaskFilter(void *pvParameters) {
       fillReal = (fillReal == vReal0) ? vReal1 : vReal0;
       fillImag = (fillImag == vImag0) ? vImag1 : vImag0;
 
-      xSemaphoreGive(xFilterFinished);
+      samplingFrequencyHzAssociatedWithCurrentPipelineBlock = blockSamplingFreq;
       xSemaphoreGive(xFilterReady);
+      xSemaphoreGive(xFilterFinished);
 
-      BlockTiming timingInfo = {
-          .blockNumber = filledBufferCounter++,
-          .start_timestamp = timerstart,
-          .end_timestamp = esp_timer_get_time()};
-      xQueueSend(filterTimestampsQueue, &timingInfo, 10);
+      //BlockTiming timingInfo = {.blockNumber = filledBufferCounter++,.start_timestamp = timerstart,.end_timestamp = esp_timer_get_time()};
+      //xQueueSend(filterTimestampsQueue, &timingInfo, 10);
+      PRINT_TIMING(TASK_FILTER, filledBufferCounter++, timerstart, esp_timer_get_time());
 
       // Let lower-priority/system tasks (including IDLE/WDT housekeeping) run.
       vTaskDelay(pdMS_TO_TICKS(1));

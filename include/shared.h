@@ -22,8 +22,8 @@ struct SignalStats {
   float max;
 };
 
-extern volatile uint32_t samplingFreq;
-extern volatile uint32_t optimizedFreq;
+extern volatile uint32_t requestedSamplingFrequencyHzForNextAcquisitionBlock;
+extern volatile uint32_t samplingFrequencyHzAssociatedWithCurrentPipelineBlock;
 
 extern WiFiClient wifiClient;
 extern PubSubClient mqttClient;
@@ -33,6 +33,8 @@ extern TaskHandle_t readADCTaskHandle;
 extern TaskHandle_t filterTaskHandle;
 extern TaskHandle_t communicationTaskHandle;
 extern TaskHandle_t timingCsvTaskHandle;
+extern TaskHandle_t generatorTaskHandle;
+
 
 extern QueueHandle_t maxFFTQueue;
 extern QueueHandle_t communicationTimestampsQueue;

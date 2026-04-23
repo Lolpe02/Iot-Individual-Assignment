@@ -1,75 +1,47 @@
-import argparse
-import csv
-import sys
-import time
+#logger.py
+import serial, sys
 
-import serial
+port = sys.argv[1]
+baud = int(sys.argv[2])
+max_lines = int(sys.argv[3]) if len(sys.argv) > 3 else 100
 
-
-def parse_line(line):
-    parts = [p.strip() for p in line.split(",")]
-    if len(parts) != 5:
-        return None
-    task, block, start_us, end_us, duration_us = parts
-    if task not in {"sampling", "filter", "fft", "comm"}:
-        return None
+def is_timing_row(line):
+    parts = line.split(",")
+    if len(parts) != 4:
+        return False
     try:
-        return {
-            "task": task,
-            "block": int(block),
-            "start_us": int(start_us),
-            "end_us": int(end_us),
-            "duration_us": int(duration_us),
-        }
+        [int(p) for p in parts]
+        return True
     except ValueError:
-        return None
+        return False
 
-
-def main():
-    parser = argparse.ArgumentParser(description="Log task timing CSV from serial to file.")
-    parser.add_argument("--port", required=True, help="Serial port, e.g. COM5")
-    parser.add_argument("--baud", type=int, default=115200, help="Baud rate")
-    parser.add_argument("--output", default="timings.csv", help="CSV output path")
-    parser.add_argument("--duration", type=float, default=0.0, help="Seconds to log; 0 = infinite")
-    args = parser.parse_args()
-
-    start = time.time()
-    rows = 0
-
-    with serial.Serial(args.port, args.baud, timeout=1) as ser, open(args.output, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["task", "block", "start_us", "end_us", "duration_us"])
-        writer.writeheader()
-
-        print(f"Logging from {args.port} at {args.baud} baud -> {args.output}")
-        print("Press Ctrl+C to stop.")
-
+with serial.Serial(port, baud, timeout=1) as ser, \
+    open("tools/data.csv", "w") as f:
+    print(f"Logging... stop a {max_lines} righe timing (Ctrl+C per fermare prima)")
+    # Aspetta il segnale WAITING dall'ESP32
+    print("In attesa dell'ESP32...")
+    while True:
+        line = ser.readline().decode("utf-8", errors="ignore").strip()
+        if "Starting up..." in line:
+            break
+    
+    # Manda il via
+    ser.write(b'\n')
+    print("Avviato — logging in corso...")
+    count = 0
+    while count < max_lines:
         try:
-            while True:
-                if args.duration > 0 and (time.time() - start) >= args.duration:
-                    break
-
-                raw = ser.readline()
-                if not raw:
-                    continue
-
-                line = raw.decode(errors="ignore").strip()
-                record = parse_line(line)
-                if record is None:
-                    continue
-
-                writer.writerow(record)
-                rows += 1
-                if rows % 100 == 0:
-                    f.flush()
-                    print(f"Saved {rows} rows...")
-
+            line = ser.readline().decode("utf-8", errors="ignore").strip()
+            if not line:
+                continue
+            if "[MQTT]" in line or ">" in line:
+                print(line)
+            f.write(line + "\n")
+            f.flush()
+            if is_timing_row(line):
+                count += 1
         except KeyboardInterrupt:
-            pass
+            break
+    print(f"Fatto — {count} righe timing salvate.")
 
-        f.flush()
-
-    print(f"Done. Saved {rows} rows to {args.output}")
-
-
-if __name__ == "__main__":
-    main()
+# python tools/log_timings_serial.py COM3 115200

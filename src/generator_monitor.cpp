@@ -8,11 +8,14 @@
 // Configurazione INA e Segnale
 #define INA219_ADDR 0x40
 #define PWM_CARRIER_HZ 200000    // Frequenza base PWM hardware
-#define WAVE_UPDATE_HZ 5000      // Aggiornamento duty per onda molto piu morbida
-#define TELEMETRY_UPDATE_HZ 25   // Lettura INA + print a bassa frequenza
+#define WAVE_UPDATE_HZ 20000     // Aggiornamento duty alto per massima morbidezza
+#define TELEMETRY_UPDATE_HZ 100   // Lettura INA + print a bassa frequenza
 
 const float kNoiseSigma = 0.2f;
 const float kSpikeProb = 0.02f;
+const int nWaves = 1;
+const float waveFreqs[] = {5.0f, 14.0f, 0.005f}; // Frequenze in Hz
+const float waveAmps[] = {4.0f, 2.0f, 10.0f};    // Ampiezze dei componenti sinusoidali
 
 #include <Arduino.h>
 #include <Wire.h>
@@ -56,7 +59,8 @@ void setup() {
   // Configurazione PWM
   pinMode(PWM_OUTPUT_PIN, OUTPUT);
   analogWriteFreq(PWM_CARRIER_HZ);
-  analogWriteRange(255);   // Risoluzione 8-bit (0-255)
+  // Massima risoluzione compatibile con la carrier: duty piu fine senza toccare la freq INA.
+  analogWriteRange((uint32_t)(125000000UL / PWM_CARRIER_HZ));
 
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, HIGH);
@@ -86,24 +90,28 @@ void loop() {
   const unsigned long telemetryPeriodUs = 1000000UL / TELEMETRY_UPDATE_HZ;
   const unsigned long now = micros();
 
-  if (now - lastWaveUs >= wavePeriodUs) {
-    lastWaveUs = now;
+  while (now - lastWaveUs >= wavePeriodUs) {
+    lastWaveUs += wavePeriodUs;
     t += (float)wavePeriodUs / 1000000.0f;
 
     float signalRaw = 0.0f;
     float waveNorm = 0.0f;
+    float signalAbsMax = 8.0f;
 
-    signalRaw = 2.0f * sin(2.0f * PI * 3.0f * t)
-              + 4.0f * sin(2.0f * PI * 5.0f * t)
-              + gaussianNoise(kNoiseSigma)
-              + anomalySpike(kSpikeProb);
+    for (int i = 0; i < nWaves; i++) {
+      signalRaw += waveAmps[i] * sin(2.0f * PI * waveFreqs[i] * t);
+      signalAbsMax += waveAmps[i];
+    }
+    // Aggiungi rumore e spike per testare la robustezza del sistema
+    //signalRaw += gaussianNoise(kNoiseSigma) + anomalySpike(kSpikeProb);
 
-    // Mappa un range atteso [-22, 22] su [0, 1], con saturazione.
-    const float signalAbsMax = 22.0f;
+    // Mappa un range atteso [-signalAbsMax, signalAbsMax] su [0, 1], con saturazione.
+    
     waveNorm = 0.5f + (signalRaw / (2.0f * signalAbsMax));
     waveNorm = constrain(waveNorm, 0.0f, 1.0f);
 
-    int pwmVal = (int)(waveNorm * 255.0f + 0.5f);
+    const uint32_t pwmRange = (uint32_t)(125000000UL / PWM_CARRIER_HZ);
+    int pwmVal = (int)(waveNorm * (float)pwmRange + 0.5f);
     analogWrite(PWM_OUTPUT_PIN, pwmVal);
 
     lastSignalRaw = signalRaw;

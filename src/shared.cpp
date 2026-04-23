@@ -1,7 +1,7 @@
 #include "shared.h"
 
-volatile uint32_t samplingFreq = 44100;
-volatile uint32_t optimizedFreq = 0;
+volatile uint32_t requestedSamplingFrequencyHzForNextAcquisitionBlock = 1000;
+volatile uint32_t samplingFrequencyHzAssociatedWithCurrentPipelineBlock = 1000;
 
 WiFiClient wifiClient;
 PubSubClient mqttClient(wifiClient);
@@ -11,6 +11,7 @@ TaskHandle_t readADCTaskHandle = nullptr;
 TaskHandle_t filterTaskHandle = nullptr;
 TaskHandle_t communicationTaskHandle = nullptr;
 TaskHandle_t timingCsvTaskHandle = nullptr;
+TaskHandle_t generatorTaskHandle = nullptr;
 
 QueueHandle_t maxFFTQueue = nullptr;
 QueueHandle_t communicationTimestampsQueue = nullptr;
