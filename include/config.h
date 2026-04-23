@@ -8,7 +8,7 @@
 #define TASK_FILTER  1
 #define TASK_FFT     2
 #define TASK_COMM    3
-#define USE_LORA true // true = LoRa, false = MQTT
+#define USE_LORA false // true = LoRa, false = MQTT
 
 // Macro unica per tutti i task
 #define PRINT_TIMING(taskId, blockNum, startUs, endUs) \

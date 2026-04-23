@@ -1,1 +1,103 @@
-hello, this is the project
+# Iot Project
+
+## Abstract
+In this repo there is all the code for the course Internet-of-Things Algorithms and Services course, held by Sapienza University of Rome during A.Y. 2025/2026. 
+The goal of the assignment is to create an IoT system that collects information from a sensor, analyses the data locally and communicates to a nearby server an aggregated value of the sensor readings. The IoT system adapts the sampling frequency in order to save energy and reduce communication overhead. The IoT device will be based on an ESP32 prototype board and the firmware will be developed using the FreeRTOS. You are free to use IoT-Lab or real devices.
+
+## Materials
+- 1 ESP32 Heltec V3 Lora, for LoRa functionalities
+- 1 ESP32-WROOM-32 
+- 1 INA219 
+- 1 raspberry pi pico
+- 1 small breadboard
+- 1/2 100 microOhm resistors
+-  1 10 microFarahd condenser
+- plenty of wires
+
+---
+
+## Structure
+
+![Overview](images\MVIMG_20260423_231926.jpg)
+We have two main components, and their respective builds can be found in the platformio.ini file:
+- the **Esp32s** contain the parts you will find in most IoT devices: the **Sampler**, the **Filter**, the **FFT** and the **Communication**
+- the **Raspberry Pi Pico** instead works as the **Signal generator** and **Energy monitor**
+
+### Signal generation
+Il raspberry pico utilizza la libreria pwm per generare la sinusoide richiesta (singola o la somma di più onde) a una frequenza di 10.000 hz, e a richiesta, inietta rumore gaussiano o spikes
+
+![Signal generated and plotted without impurities ](images\segnale puro.png)
+
+The pwm signal is semi-analog, so to transform it in analog we pass the signal through an RC lowpass filter, with the condenser and resistor, before reaching the adc pin 32 on the Esp
+
+### Pipeline
+The Esp boasts a robust pipeline, utilizing a series of three double-buffers, all of 1024 samples, for near-continuous processing. Each component works on the data passed on from the previous task and passes it to the next worker. Each task fills one of the double-buffers while previous and next tasks work on the filled
+
+![Full pipeline](images\pipeline2.jpg)
+
+#### Sampler task and maximum frequency
+The sampler uses the built-in i2s hardware of the Esp (only WROOM), which uses DMA to directly sample from the adc pin and put it in memory. I2s is designed for sound, so it can sample higher than 44.100 hz. Then the sampler casts and copies appropriately My experiments showed that without sending data with lora or mqtt, the pipeline easily can withstand frequencies higher than 10.000 hz, also 15.000 hz, but this introduces numerous problems, so we start from an arbitrary 1.000 hz.
+
+#### Filter task
+The filter takes the filled buffer given from the sampler and can:
+- do nothing
+- compute z-score
+- compute hampel
+because it uses a full block to work on and not a continuous flow of samples, sliding window filters are  penalised as they use the previous samples to calculate, so we use an **history** buffer that saves the last WINDOW_SIZE components of the block, to use in the next one
+
+#### FFT task
+This task always runs computes the Fast-Fourier Transform on the filtered block, tries to find the highest frequency with the highest amplitude (so it is present in the signal) and if its not too similar with the current one, sets it as the global frequency. It takes a staggering few microseconds to compute
+
+#### Comms task
+The filtered buffer is averaged, std over the entire 1024 samples array, so it's 1024/current sampling frequency seconds. WE gathered data can be transmitted via WiFi using MQTT (on a private broker) and LoRa (on TTN). A set flag will choose if LoRa or MQTT is used, located in the header file, both WiFi and LoRa can be enabled/disabled to replicate all the experiments.
+
+### Performance
+#### Energy
+Let' measure the energy while oversampling, powered by usb
+
+![Oversampling consumption](images\energia mqtt_noopt.png)
+
+As you can see the power consumption is very high, averiging **410 mW** and **76 mA**. The esp never sleeps and performs all the pipeline
+
+Let's see the adaptive sampling
+
+![manca]()
+
+#### RTTs
+These are printed snippets from the program
+
+[LoRa] Sending packet 1...
+[LoRa] Uplink OK (no downlink) | AVG: 1886.99 | Latency: 2871 ms
+[LoRa] Waiting duty-cycle window: 18058 ms
+[LoRa] Sending packet 2...
+[LoRa] Uplink OK (no downlink) | AVG: 1885.00 | Latency: 2863 ms
+[LoRa] Sending packet 3...
+[LoRa] Uplink OK (no downlink) | AVG: 1885.87 | Latency: 2863 ms
+
+1776943053: Sending PUBLISH to ESP32Client (d0, q0, r0, m0, 'iot_single/response', ... (56 bytes))
+1776943053: Received PUBLISH from ESP32Client (d0, q0, r0, m0, 'iot_single/stats', ... (56 bytes))
+1776943053: Sending PUBLISH to auto-856FDC9D-0D2D-3404-8A3F-AA822E8D00C0 (d0, q0, r0, m0, 'iot_single/stats', ... (56 bytes))
+1776943053: Received PUBLISH from auto-3D229021-8978-AFE6-0763-76C2D917971E (d0, q0, r0, m0, 'iot_single/response', ... (56 bytes))
+1776943053: Sending PUBLISH to ESP32Client (d0, q0, r0, m0, 'iot_single/response', ... (56 bytes))
+1776943054: Received PUBLISH from ESP32Client (d0, q0, r0, m0, 'iot_single/stats', ... (56 bytes))
+1776943054: Sending PUBLISH to auto-856FDC9D-0D2D-3404-8A3F-AA822E8D00C0 (d0, q0, r0, m0, 'iot_single/stats', ... (56 bytes))
+1776943054: Received PUBLISH from auto-3D229021-8978-AFE6-0763-76C2D917971E (d0, q0, r0, m0, 'iot_single/response', ... (56 bytes))
+1776943054: Sending PUBLISH to ESP32Client (d0, q0, r0, m0, 'iot_single/response', ... (56 bytes))
+1776943054: Received PUBLISH from ESP32Client (d0, q0, r0, m0, 'iot_single/stats', ... (56 bytes))
+1776943054: Sending PUBLISH to auto-856FDC9D-0D2D-3404-8A3F-AA822E8D00C0 (d0, q0, r0, m0, 'iot_single/stats', ... (56 bytes))
+**rtt**: 5.273 ms
+
+
+#### End to End
+Due to the array structure it isnt possible to time the exact time from when a sample is extracted and when it's averaged and send, but we can time evry iteration for every task, and plot the pipeline in action
+
+![execution time (no freq optimization)](images\pipeline_noopt.png)
+
+We can see how every task elaborates a block and passes it to the next one. Here are the average executions:
+
+  sampler       47.55 ms
+  filter        49.02 ms
+  fft           12.00 ms
+  comm           5.71 ms
+  sum          114,24 ms
+

@@ -11,7 +11,7 @@ void TaskFFT(void *pvParameters) { //1–3ms
   constexpr float kNyquistMargin = 2.6f;
   constexpr float kStepUp = 1.08f;
   constexpr float kStepDown = 0.92f;
-  constexpr float kMinStepHz = 1.0f;
+  constexpr float kMinStepHz = 20.0f;
   constexpr float kMaxFs = 30000.0f;
 
   Serial.println("Starting FFT task...");

@@ -34,7 +34,7 @@ void setup() {
   if (ok != pdPASS) {
     Serial.println("[ERR] Failed to create FFT task");
   }
-  ok = xTaskCreate(TaskCommunication, "Communication_Task", 6 * 1024, nullptr, 2, &communicationTaskHandle);
+  ok = xTaskCreate(TaskCommunication, "Communication_Task", 4 * 1024, nullptr, 2, &communicationTaskHandle);
   if (ok != pdPASS) {
     Serial.println("[ERR] Failed to create Communication task");
   }/*

@@ -5,6 +5,7 @@
 
 #include "shared.h"
 #include "config.h"
+#include "secrets.h"
 
 #if USE_LORA
 #define LORA_NSS  8
@@ -20,23 +21,6 @@ SX1262 radio(new Module(LORA_NSS, LORA_DIO1, LORA_NRST, LORA_BUSY));
 
 // LoRaWAN node object
 LoRaWANNode node(&radio, &EU868);
-#endif
-
-static int64_t sendTimestamp = 0;   // rtt timestamp 
-static uint16_t filledBufferCounter = 0; // static means it stays here across calls, and it's only visible in this file
-
-static void setupWiFi() {
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  Serial.printf("[WiFi] Connecting to %s", WIFI_SSID);
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-  Serial.printf("\n[WiFi] Connected!, IP address: %s\n", WiFi.localIP().toString().c_str());
-}
-
-#if USE_LORA
-
 
 static void logLoraDownlink(const uint8_t* payload, size_t size, int16_t rxWindow) {
   int64_t now = esp_timer_get_time();
@@ -76,11 +60,24 @@ void setupLoraConn() {
 }
 #endif
 
+static int64_t sendTimestamp = 0;   // rtt timestamp 
+static uint16_t filledBufferCounter = 0; // static means it stays here across calls, and it's only visible in this file
+
+static void setupWiFi() {
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  Serial.printf("[WiFi] Connecting to %s", WIFI_SSID);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.printf("\n[WiFi] Connected!, IP address: %s\n", WiFi.localIP().toString().c_str());
+}
+
 // Callback chiamata quando arriva un messaggio sul topic subscribed
 void onMQTTMessage(char* topic, byte* payload, unsigned int length) {
   int64_t now = esp_timer_get_time();
   int64_t rtt = now - sendTimestamp;
-  //Serial.printf("[MQTT] Round-trip time: %.2f ms\n", rtt / 1000.0f);
+  Serial.printf("[MQTT] Round-trip time: %.2f ms\n", rtt / 1000.0f);
   //xQueueSend(communicationTimestampsQueue, &timingInfo, 10);
   PRINT_TIMING(TASK_COMM, filledBufferCounter++, sendTimestamp, now);
     
