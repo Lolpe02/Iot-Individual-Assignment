@@ -48,14 +48,41 @@ We have two main components, and their respective builds can be found in the pla
 - the **Raspberry Pi Pico** instead works as the **Signal generator** and **Energy monitor**
 
 ### Signal generation
-Raspberry pi Pico utilises PWM library to generate the requested sinusoid (single or sum of multiple waves), at a frequency of 10.000 hz, and on demand, injects gaussian and/or spiky noise
+Raspberry Pi Pico uses PWM to generate the signal that is later smoothed by the RC low-pass filter.
+
+The waveform is a sum of sinusoids:
+
+`signalRaw(t) = Σ A_i * sin(2π f_i t)`
+
+For the current Pico generator configuration, the values are:
+
+- PWM carrier: `200000 Hz`
+- waveform update rate: `20000 Hz`
+- sine frequencies: `5.0 Hz`, `14.0 Hz`, `0.005 Hz`
+- sine amplitudes: `4.0`, `2.0`, `10.0`
+
+Noise is implemented but currently commented out in the generator loop. The noise model is:
+
+- Gaussian noise: `kNoiseSigma = 0.2`
+- Spike probability: `kSpikeProb = 0.02`
+- Spike magnitude: uniform in `[5, 15]`
+- Spike sign: positive or negative with 50/50 probability
 
 ![Signal generated and plotted without impurities](images/segnale_puro.png)
 
-The pwm signal is semi-analog, this means it outputs a square wave of voltage, so to transform it in analog we pass the signal through an RC lowpass filter, with the condenser and resistor, before reaching the adc pin 32 on the Esp
+The PWM signal is still a square-wave output at the pin 40, so to make it usable as
+an analog input we pass it through an RC low-pass filter before it reaches the
+ESP ADC pin 32.
 
 ### Pipeline
-The Esp boasts a robust pipeline, utilizing a chain series of three double-buffers, all of 1024 samples, for near-continuous processing. Each component works on the data passed on from the previous task and passes it to the next worker. As standard double-buffer pipeline, each task fills one of the double-buffers while previous and next tasks work on the filled
+The ESP32 pipeline is built around three double-buffered sample blocks of 1024
+samples each. This lets one task fill the next block while the previous block
+is still being processed and the following block is waiting in line.
+
+In practice, each stage consumes the block produced by the stage before it,
+processes it, and then hands it off to the next task. Because the buffers are
+rotated continuously, sampling, filtering, FFT, and communication can overlap
+instead of running strictly one after another.
 
 ![Full pipeline](images/pipeline2.jpg)
 
@@ -70,7 +97,25 @@ The filter takes the filled buffer given from the sampler and can:
 because it uses a full block to work on and not a continuous flow of samples, sliding window filters are  penalised as they use the previous samples to calculate, so we use an **history** buffer that saves the last WINDOW_SIZE components of the block, to use in the next one
 
 #### FFT task
-This task always runs computes the Fast-Fourier Transform on the filtered block, tries to find the highest frequency with the highest amplitude (so it is present in the signal) and if its not too similar with the current one, sets it as the global frequency. It takes a staggering few microseconds to compute
+This task always runs on the filtered block and is responsible for estimating
+which frequency is currently dominant in the signal.
+
+Before running the FFT, it removes the DC component by subtracting the block
+mean. It then applies a Hamming window, computes the spectrum, and converts the
+result to magnitudes.
+
+From that spectrum, the task looks for the strongest peak and then selects the
+highest frequency bin that is still close enough to that peak (at least 70%). That value is
+used as the estimated dominant frequency of the input signal.
+
+If self-optimizing mode is enabled, the task uses that estimate to choose the
+sampling rate for the next block. The goal is to keep the sampling frequency
+comfortably above the detected signal frequency, but without oversampling more
+than necessary. A few safety rules are applied to avoid unstable jumps or very
+low/high rates.
+
+The FFT stage only takes a few milliseconds, but it runs on every block because
+it is what lets the system adapt when the signal changes.
 
 #### Comms task
 The filtered buffer is averaged, std over the entire 1024 samples array, so it's 1024/{current sampling frequency} seconds. WE gathered data can be transmitted via WiFi using MQTT (on a private broker) and LoRa (on TTN). A set flag will choose if LoRa or MQTT is used, located in the header file, both WiFi and LoRa can be enabled/disabled to replicate all the experiments.
