@@ -73,7 +73,7 @@ because it uses a full block to work on and not a continuous flow of samples, sl
 This task always runs computes the Fast-Fourier Transform on the filtered block, tries to find the highest frequency with the highest amplitude (so it is present in the signal) and if its not too similar with the current one, sets it as the global frequency. It takes a staggering few microseconds to compute
 
 #### Comms task
-The filtered buffer is averaged, std over the entire 1024 samples array, so it's 1024/current sampling frequency seconds. WE gathered data can be transmitted via WiFi using MQTT (on a private broker) and LoRa (on TTN). A set flag will choose if LoRa or MQTT is used, located in the header file, both WiFi and LoRa can be enabled/disabled to replicate all the experiments.
+The filtered buffer is averaged, std over the entire 1024 samples array, so it's 1024/{current sampling frequency} seconds. WE gathered data can be transmitted via WiFi using MQTT (on a private broker) and LoRa (on TTN). A set flag will choose if LoRa or MQTT is used, located in the header file, both WiFi and LoRa can be enabled/disabled to replicate all the experiments.
 
 ### Performance
 #### Energy
@@ -92,6 +92,8 @@ Now we see an average of **300 mW** and **60mA**, with respectively a 25% and 21
 #### RTTs
 These are printed snippets from the program
 
+##### LoRa
+We use the RadioLib library and connected to LoraWAN with ABP initialization, this requires settings manually your keys taking them from TTN. We send 4 bytes, we have to wait more than 18 seconds before the next packet
 [LoRa] Sending packet 1...
 [LoRa] Uplink OK (no downlink) | AVG: 1886.99 | Latency: 2871 ms
 [LoRa] Waiting duty-cycle window: 18058 ms
@@ -100,6 +102,9 @@ These are printed snippets from the program
 [LoRa] Sending packet 3...
 [LoRa] Uplink OK (no downlink) | AVG: 1885.87 | Latency: 2863 ms
 
+
+##### MQTT
+We use the SubPubLibrary to connect to the Mosquitto Broker installed on my PC (requires a little bit of setup: opening the firewall, allowing anonymous clients, script to send responses on publish), connect to the wifi of my cellphone.
 1776943053: Sending PUBLISH to ESP32Client (d0, q0, r0, m0, 'iot_single/response', ... (56 bytes))
 1776943053: Received PUBLISH from ESP32Client (d0, q0, r0, m0, 'iot_single/stats', ... (56 bytes))
 1776943053: Sending PUBLISH to auto-856FDC9D-0D2D-3404-8A3F-AA822E8D00C0 (d0, q0, r0, m0, 'iot_single/stats', ... (56 bytes))
@@ -108,9 +113,11 @@ These are printed snippets from the program
 
 
 #### End to End
-Due to the array structure it isnt possible to time the exact time from when a sample is extracted and when it's averaged and send, but we can time evry iteration for every task, and plot the pipeline in action
+Due to the array structure it isnt possible to time the exact time from when a sample is extracted and when it's averaged and send, but we can time every iteration for every task, and plot the pipeline in action on the time domain, to see how much time on average each block of 1024 sample is processed by each task
 
 ![execution time (no freq optimization)](images/pipeline_noopt.png)
+
+This is an ideal plot that shows best how a task sends the processed buffer to the next one, but its not perfect, block 0 of sampler is never logged.
 
 We can see how every task elaborates a block and passes it to the next one. Here are the average executions:
 
