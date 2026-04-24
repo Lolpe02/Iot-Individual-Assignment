@@ -1,8 +1,30 @@
 # Iot Project
 
 ## Abstract
-In this repo there is all the code for the course Internet-of-Things Algorithms and Services course, held by Sapienza University of Rome during A.Y. 2025/2026. 
-The goal of the assignment is to create an IoT system that collects information from a sensor, analyses the data locally and communicates to a nearby server an aggregated value of the sensor readings. The IoT system adapts the sampling frequency in order to save energy and reduce communication overhead. The IoT device will be based on an ESP32 prototype board and the firmware will be developed using the FreeRTOS. You are free to use IoT-Lab or real devices.
+This repository contains firmware for an IoT sensing node built for the
+Internet of Things Algorithms and Services course (Sapienza University of Rome,
+A.Y. 2025/2026).
+
+The main idea is simple:
+
+- sample a signal on-device
+- process it locally with filtering and FFT
+- transmit compact statistics instead of raw data
+- adapt sampling behavior to reduce energy and network usage
+
+The project uses FreeRTOS tasks on ESP32 and supports two uplink modes:
+
+- MQTT over WiFi
+- LoRaWAN (ABP) on TTN
+
+## What is in this project
+
+There are two firmware targets in `platformio.ini`:
+
+- `nodemcu-32s` or `heltec_wifi_lora_32_V3`: the sensing node (sampler,
+  filter, FFT, communication)
+- `raspberry-pi-pico`: signal generator + power monitor firmware
+  (`src/generator_monitor.cpp`)
 
 ## Materials
 - 1 ESP32 Heltec V3 Lora, for LoRa functionalities
@@ -11,8 +33,9 @@ The goal of the assignment is to create an IoT system that collects information 
 - 1 raspberry pi pico
 - 1 small breadboard
 - 1/2 100 microOhm resistors
--  1 10 microFarahd condenser
+- 1 10 microFarahd condenser
 - plenty of wires
+- 1 tin cookie box for DIY Faraday cage (doesn't work)
 
 ---
 
@@ -21,18 +44,18 @@ The goal of the assignment is to create an IoT system that collects information 
 ![Overview](images/MVIMG_20260423_231926.jpg)
 
 We have two main components, and their respective builds can be found in the platformio.ini file:
-- the **Esp32s** contain the parts you will find in most IoT devices: the **Sampler**, the **Filter**, the **FFT** and the **Communication**
+- the **Esp32**(s) contain the parts you will find in most IoT devices: the **Sampler**, the **Filter**, the **FFT** and the **Communications**
 - the **Raspberry Pi Pico** instead works as the **Signal generator** and **Energy monitor**
 
 ### Signal generation
-Raspberry pi Pico utilises PWM library to generate the requested sinusoid (single or sum of multiple waves), at a frequency of 10.000 hz, and on demand,  injects gaussian and/or spiky noise
+Raspberry pi Pico utilises PWM library to generate the requested sinusoid (single or sum of multiple waves), at a frequency of 10.000 hz, and on demand, injects gaussian and/or spiky noise
 
 ![Signal generated and plotted without impurities](images/segnale_puro.png)
 
-The pwm signal is semi-analog, so to transform it in analog we pass the signal through an RC lowpass filter, with the condenser and resistor, before reaching the adc pin 32 on the Esp
+The pwm signal is semi-analog, this means it outputs a square wave of voltage, so to transform it in analog we pass the signal through an RC lowpass filter, with the condenser and resistor, before reaching the adc pin 32 on the Esp
 
 ### Pipeline
-The Esp boasts a robust pipeline, utilizing a series of three double-buffers, all of 1024 samples, for near-continuous processing. Each component works on the data passed on from the previous task and passes it to the next worker. Each task fills one of the double-buffers while previous and next tasks work on the filled
+The Esp boasts a robust pipeline, utilizing a chain series of three double-buffers, all of 1024 samples, for near-continuous processing. Each component works on the data passed on from the previous task and passes it to the next worker. As standard double-buffer pipeline, each task fills one of the double-buffers while previous and next tasks work on the filled
 
 ![Full pipeline](images/pipeline2.jpg)
 
@@ -64,7 +87,7 @@ Let's see the adaptive sampling
 
 ![Adaptive Sampling consumtion](images/energia_mqtt_opt.png)
 
-Now we see an average of **300 mW** and **60**, with respectively a 25% and 21% savings
+Now we see an average of **300 mW** and **60mA**, with respectively a 25% and 21% savings
 
 #### RTTs
 These are printed snippets from the program
