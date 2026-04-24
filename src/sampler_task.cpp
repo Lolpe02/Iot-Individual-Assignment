@@ -14,6 +14,7 @@
   }
 #else
   void setupI2S(uint32_t sampleRate) {
+    constexpr adc1_channel_t kI2sAdcChannel = ADC1_CHANNEL_5; // GPIO33
     i2s_config_t i2s_config = {
         .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX | I2S_MODE_ADC_BUILT_IN),
         .sample_rate = sampleRate,
@@ -24,8 +25,8 @@
         .dma_buf_count = 2,
         .dma_buf_len = SAMPLES};
     i2s_driver_install(I2S_NUM_0, &i2s_config, 0, nullptr);
-    i2s_set_adc_mode(ADC_UNIT_1, ADC1_CHANNEL_4);
-    adc1_config_channel_atten(ADC1_CHANNEL_4, ADC_ATTEN_DB_12);
+    i2s_set_adc_mode(ADC_UNIT_1, kI2sAdcChannel);
+    adc1_config_channel_atten(kI2sAdcChannel, ADC_ATTEN_DB_12);
     i2s_adc_enable(I2S_NUM_0);
   }
 #endif

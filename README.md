@@ -19,6 +19,7 @@ The goal of the assignment is to create an IoT system that collects information 
 ## Structure
 
 ![Overview](images/MVIMG_20260423_231926.jpg)
+
 We have two main components, and their respective builds can be found in the platformio.ini file:
 - the **Esp32s** contain the parts you will find in most IoT devices: the **Sampler**, the **Filter**, the **FFT** and the **Communication**
 - the **Raspberry Pi Pico** instead works as the **Signal generator** and **Energy monitor**
@@ -26,7 +27,7 @@ We have two main components, and their respective builds can be found in the pla
 ### Signal generation
 Raspberry pi Pico utilises PWM library to generate the requested sinusoid (single or sum of multiple waves), at a frequency of 10.000 hz, and on demand,  injects gaussian and/or spiky noise
 
-![Signal generated and plotted without impurities ](images/segnale puro.png)
+![Signal generated and plotted without impurities](images/segnale_puro.png)
 
 The pwm signal is semi-analog, so to transform it in analog we pass the signal through an RC lowpass filter, with the condenser and resistor, before reaching the adc pin 32 on the Esp
 
@@ -55,13 +56,15 @@ The filtered buffer is averaged, std over the entire 1024 samples array, so it's
 #### Energy
 Let' measure the energy while oversampling, powered by usb
 
-![Oversampling consumption](images/energia mqtt_noopt.png)
+![Oversampling consumption](images/energia_mqtt_noopt.png)
 
 As you can see the power consumption is very high, averiging **410 mW** and **76 mA**. The esp never sleeps and performs all the pipeline
 
 Let's see the adaptive sampling
 
-![manca]()
+![Adaptive Sampling consumtion](images/energia_mqtt_opt.png)
+
+Now we see an average of **300 mW** and **60**, with respectively a 25% and 21% savings
 
 #### RTTs
 These are printed snippets from the program
@@ -77,14 +80,7 @@ These are printed snippets from the program
 1776943053: Sending PUBLISH to ESP32Client (d0, q0, r0, m0, 'iot_single/response', ... (56 bytes))
 1776943053: Received PUBLISH from ESP32Client (d0, q0, r0, m0, 'iot_single/stats', ... (56 bytes))
 1776943053: Sending PUBLISH to auto-856FDC9D-0D2D-3404-8A3F-AA822E8D00C0 (d0, q0, r0, m0, 'iot_single/stats', ... (56 bytes))
-1776943053: Received PUBLISH from auto-3D229021-8978-AFE6-0763-76C2D917971E (d0, q0, r0, m0, 'iot_single/response', ... (56 bytes))
-1776943053: Sending PUBLISH to ESP32Client (d0, q0, r0, m0, 'iot_single/response', ... (56 bytes))
-1776943054: Received PUBLISH from ESP32Client (d0, q0, r0, m0, 'iot_single/stats', ... (56 bytes))
-1776943054: Sending PUBLISH to auto-856FDC9D-0D2D-3404-8A3F-AA822E8D00C0 (d0, q0, r0, m0, 'iot_single/stats', ... (56 bytes))
-1776943054: Received PUBLISH from auto-3D229021-8978-AFE6-0763-76C2D917971E (d0, q0, r0, m0, 'iot_single/response', ... (56 bytes))
-1776943054: Sending PUBLISH to ESP32Client (d0, q0, r0, m0, 'iot_single/response', ... (56 bytes))
-1776943054: Received PUBLISH from ESP32Client (d0, q0, r0, m0, 'iot_single/stats', ... (56 bytes))
-1776943054: Sending PUBLISH to auto-856FDC9D-0D2D-3404-8A3F-AA822E8D00C0 (d0, q0, r0, m0, 'iot_single/stats', ... (56 bytes))
+
 **rtt**: 5.273 ms
 
 
